@@ -4,65 +4,75 @@ import httpx
 
 app = FastAPI()
 
-@app.get("/")
-def read_root():
-    return {"message": "Ciao! Questo è il primo test del Betting Agent."}
+API_KEY = os.getenv("ODDS_API_KEY")
 
-@app.get("/ev")
-def calculate_ev(quota: float, p: float):
-    b = quota - 1
-    ev = b * p - (1 - p)
-    return {"EV": ev, "message": "Conviene" if ev > 0 else "Non conviene"}
-
-@app.get("/kelly")
-def calculate_kelly(quota: float, p: float, fraction: float = 0.3):
-    b = quota - 1
-    f = (b * p - (1 - p)) / b if b != 0 else 0
-    stake_fraction = max(0, f) * fraction
-    return {"Kelly frazionato": stake_fraction}
-
-API_KEY = os.getenv("ODDS_API_KEY")  # Prende la chiave impostata come variabile ambiente
+@app.get("/available-sports")
+async def get_sports():
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="Chiave API non configurata")
+    url = f"https://api.the-odds-api.com/v4/sports?apiKey={API_KEY}"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+        if response.status_code != 200:
+            detail = response.text
+            raise HTTPException(status_code=response.status_code, detail=detail)
+        return response.json()
 
 @app.get("/quote-demo")
 async def get_demo_quotes():
     if not API_KEY:
         raise HTTPException(status_code=500, detail="Chiave API non configurata")
 
-    # Usare soccer_epl (Premier League) per il piano gratuito
-    url = f"https://api.the-odds-api.com/v4/sports/soccer_epl/matches?apiKey={API_KEY}"
+    # Personalizza qui usando uno sport valido ottenuto da /available-sports
+    sport = "soccer_epl"  # Cambio automatico consigliato dopo test
+
+    url = f"https://api.the-odds-api.com/v4/sports/{sport}/matches?apiKey={API_KEY}"
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
         if response.status_code != 200:
-            # Mostra tutto il messaggio json di risposta per capire l’errore
             try:
                 detail = response.json()
             except Exception:
-                detail = {"status_code": response.status_code, "text": response.text}
+                detail = response.text
             raise HTTPException(status_code=response.status_code, detail=detail)
 
         data = response.json()
         result = []
         for match in data[:5]:
             for book in match.get('bookmakers', []):
-                if book.get('title') in ['Bet365', 'Pinnacle']:
+                if book['title'] in ['Bet365', 'Pinnacle']:
                     for market in book.get('markets', []):
-                        if market.get('key') == 'h2h':
+                        if market['key'] == 'h2h':
                             odds = market.get('outcomes', [])
                             if len(odds) == 3:
+                                # Evita divisione per zero usando controllo
                                 try:
-                                    home_price = odds[0].get('price')
-                                    draw_price = odds[1].get('price')
-                                    away_price = odds[2].get('price')
-                                    result.append({
-                                        "match": f"{match.get('home_team')} vs {match.get('away_team')}",
-                                        "bookmaker": book.get('title'),
-                                        "home_win_odds": home_price,
-                                        "draw_odds": draw_price,
-                                        "away_win_odds": away_price,
-                                        "prob_home_win": round(1 / home_price, 4) if home_price else None,
-                                        "prob_draw": round(1 / draw_price, 4) if draw_price else None,
-                                        "prob_away_win": round(1 / away_price, 4) if away_price else None,
-                                    })
-                                except Exception:
-                                    continue
+                                    prob_home = round(1 / odds[0]['price'], 4) if odds[0]['price'] > 0 else 0
+                                    prob_draw = round(1 / odds[1]['price'], 4) if odds[1]['price'] > 0 else 0
+                                    prob_away = round(1 / odds[2]['price'], 4) if odds[2]['price'] > 0 else 0
+                                except (ZeroDivisionError, KeyError):
+                                    prob_home = prob_draw = prob_away = 0
+
+                                result.append({
+                                    "match": f"{match.get('home_team', 'Unknown')} vs {match.get('away_team', 'Unknown')}",
+                                    "bookmaker": book.get('title', 'Unknown'),
+                                    "home_win_odds": odds[0].get('price', 0),
+                                    "draw_odds": odds[1].get('price', 0),
+                                    "away_win_odds": odds[2].get('price', 0),
+                                    "prob_home_win": prob_home,
+                                    "prob_draw": prob_draw,
+                                    "prob_away_win": prob_away,
+                                })
         return result
+
+@app.get("/ev")
+def calculate_ev():
+    # Placeholder funzione calcolo valore atteso (EV)
+    return {"message": "Calcolo EV placeholder"}
+
+@app.get("/kelly")
+def calculate_kelly():
+    # Placeholder funzione calcolo frazione Kelly
+    return {"message": "Calcolo Kelly placeholder"}
+
+
