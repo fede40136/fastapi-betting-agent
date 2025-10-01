@@ -139,3 +139,29 @@ def kelly_placeholder():
     Placeholder: calcolo frazione di Kelly da integrare con parametri di rischio.
     """
     return {"message": "Calcolo Kelly in sviluppo"}
+
+from pydantic import BaseModel, Field
+
+class EvInput(BaseModel):
+    prob: float = Field(..., ge=0, le=1, description="Probabilità stimata evento (0..1)")
+    odds: float = Field(..., gt=1, description="Quota decimale > 1")
+    stake: float = Field(..., gt=0, description="Puntata in unità monetarie")
+
+class KellyInput(BaseModel):
+    prob: float = Field(..., ge=0, le=1, description="Probabilità stimata evento (0..1)")
+    odds: float = Field(..., gt=1, description="Quota decimale > 1")
+    safety: float = Field(0.5, gt=0, le=1, description="Fattore prudenziale 0..1")
+
+@app.post("/ev")
+def calc_ev(body: EvInput):
+    b = body.odds - 1
+    ev_pct = body.prob * b - (1 - body.prob)
+    ev_abs = ev_pct * body.stake
+    return {"ev_abs": round(ev_abs, 4), "ev_pct": round(ev_pct, 4)}
+
+@app.post("/kelly")
+def calc_kelly(body: KellyInput):
+    b = body.odds - 1
+    k = (body.prob * body.odds - 1) / b if b > 0 else 0.0
+    k = max(0.0, k) * body.safety
+    return {"kelly_fraction": round(k, 4)}
