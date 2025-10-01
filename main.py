@@ -1,78 +1,141 @@
+"""
+main.py - FastAPI Betting Agent Backend API
+
+Descrizione:
+Backend API per un agente di scommesse sportive basato su FastAPI, orientato a scalabilità e
+monetizzazione futura. Integra The Odds API per il recupero di quote in tempo reale, espone endpoint
+per consultazione quote e include placeholder per calcoli EV e Kelly. Progettato con gestione errori
+robusta, sicurezza delle credenziali via variabili d’ambiente e best practice per deployment cloud.
+
+Funzionalità principali:
+- /available-sports: elenca gli sport disponibili per la chiave The Odds API configurata
+- /quote-demo: recupera quote H2H (1X2) per uno sport selezionato (default EPL), calcola probabilità implicite
+- /ev, /kelly: placeholder per successive funzioni di calcolo e pricing
+
+Note integrazione The Odds API (v4):
+- Per ottenere le quote usare l’endpoint /v4/sports/{sport}/odds con i parametri obbligatori:
+  regions, markets, oddsFormat. Il vecchio path /matches non è valido in v4.
+- Parametri tipici: regions=uk (o us/eu/au), markets=h2h, oddsFormat=decimal.
+- Tenere conto dei costi di quota: costo = n_markets x n_regions per chiamata.
+
+Autore: [Team/Company]
+Versione: 1.0
+Data: 2025-10-01
+"""
+
 from fastapi import FastAPI, HTTPException
 import os
 import httpx
+from typing import List, Dict, Any
 
-app = FastAPI()
+app = FastAPI(title="FastAPI Betting Agent", version="1.0.0")
 
 API_KEY = os.getenv("ODDS_API_KEY")
 
-@app.get("/available-sports")
-async def get_sports():
+
+def require_api_key():
     if not API_KEY:
         raise HTTPException(status_code=500, detail="Chiave API non configurata")
+
+
+@app.get("/available-sports")
+async def available_sports() -> List[Dict[str, Any]]:
+    """
+    Ritorna l'elenco degli sport disponibili per la chiave The Odds API configurata.
+    """
+    require_api_key()
     url = f"https://api.the-odds-api.com/v4/sports?apiKey={API_KEY}"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        if response.status_code != 200:
-            detail = response.text
-            raise HTTPException(status_code=response.status_code, detail=detail)
-        return response.json()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            # Ritorna il corpo così com'è per facilitare il debug (JSON o testo)
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = resp.text
+            raise HTTPException(status_code=resp.status_code, detail=detail)
+        return resp.json()
+
 
 @app.get("/quote-demo")
-async def get_demo_quotes():
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="Chiave API non configurata")
+async def quote_demo(sport: str = "soccer_epl",
+                     regions: str = "uk",
+                     markets: str = "h2h",
+                     odds_format: str = "decimal") -> List[Dict[str, Any]]:
+    """
+    Recupera quote recenti per lo sport specificato (default: EPL) usando The Odds API v4 /odds.
+    Parametri query:
+    - sport: chiave sport da /available-sports (es. soccer_epl, soccer_italy_serie_a)
+    - regions: area bookmaker (uk, us, eu, au). Più regioni separate da virgola aumentano il costo
+    - markets: mercati richiesti (default h2h). Più mercati aumentano il costo
+    - odds_format: 'decimal' o 'american'
+    """
+    require_api_key()
 
-    # Personalizza qui usando uno sport valido ottenuto da /available-sports
-    sport = "soccer_epl"  # Cambio automatico consigliato dopo test
+    base = "https://api.the-odds-api.com/v4/sports"
+    url = (
+        f"{base}/{sport}/odds?"
+        f"regions={regions}&markets={markets}&oddsFormat={odds_format}&apiKey={API_KEY}"
+    )
 
-    url = f"https://api.the-odds-api.com/v4/sports/{sport}/matches?apiKey={API_KEY}"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-        if response.status_code != 200:
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            # Propaga l'errore esatto dalla API per rendere il debugging veloce
             try:
-                detail = response.json()
+                detail = resp.json()
             except Exception:
-                detail = response.text
-            raise HTTPException(status_code=response.status_code, detail=detail)
+                detail = resp.text
+            raise HTTPException(status_code=resp.status_code, detail=detail)
 
-        data = response.json()
-        result = []
-        for match in data[:5]:
-            for book in match.get('bookmakers', []):
-                if book['title'] in ['Bet365', 'Pinnacle']:
-                    for market in book.get('markets', []):
-                        if market['key'] == 'h2h':
-                            odds = market.get('outcomes', [])
-                            if len(odds) == 3:
-                                # Evita divisione per zero usando controllo
-                                try:
-                                    prob_home = round(1 / odds[0]['price'], 4) if odds[0]['price'] > 0 else 0
-                                    prob_draw = round(1 / odds[1]['price'], 4) if odds[1]['price'] > 0 else 0
-                                    prob_away = round(1 / odds[2]['price'], 4) if odds[2]['price'] > 0 else 0
-                                except (ZeroDivisionError, KeyError):
-                                    prob_home = prob_draw = prob_away = 0
+        data = resp.json()
+        # Normalizza output: primi 5 eventi, H2H 1X2
+        results: List[Dict[str, Any]] = []
 
-                                result.append({
-                                    "match": f"{match.get('home_team', 'Unknown')} vs {match.get('away_team', 'Unknown')}",
-                                    "bookmaker": book.get('title', 'Unknown'),
-                                    "home_win_odds": odds[0].get('price', 0),
-                                    "draw_odds": odds[1].get('price', 0),
-                                    "away_win_odds": odds[2].get('price', 0),
-                                    "prob_home_win": prob_home,
-                                    "prob_draw": prob_draw,
-                                    "prob_away_win": prob_away,
+        for event in data[:5]:
+            home = event.get("home_team")
+            away = event.get("away_team")
+            bookmakers = event.get("bookmakers", [])
+            for bm in bookmakers:
+                bname = bm.get("title")
+                # Filtra alcuni bookmaker noti; si può estendere o rimuovere questo filtro
+                if bname in ["Bet365", "Pinnacle", "William Hill", "Betfair"]:
+                    for market in bm.get("markets", []):
+                        if market.get("key") == "h2h":
+                            outs = market.get("outcomes", [])
+                            # Ci si aspetta 3 outcomes per 1X2 nel calcio
+                            if len(outs) == 3:
+                                def prob(x):
+                                    return round(1 / x, 4) if isinstance(x, (int, float)) and x > 0 else 0.0
+
+                                home_price = outs[0].get("price")
+                                draw_price = outs[1].get("price")
+                                away_price = outs[2].get("price")
+
+                                results.append({
+                                    "match": f"{home} vs {away}",
+                                    "bookmaker": bname,
+                                    "home_win_odds": home_price,
+                                    "draw_odds": draw_price,
+                                    "away_win_odds": away_price,
+                                    "prob_home_win": prob(home_price),
+                                    "prob_draw": prob(draw_price),
+                                    "prob_away_win": prob(away_price),
                                 })
-        return result
+        return results
+
 
 @app.get("/ev")
-def calculate_ev():
-    # Placeholder funzione calcolo valore atteso (EV)
-    return {"message": "Calcolo EV placeholder"}
+def ev_placeholder():
+    """
+    Placeholder: calcolo Valore Atteso (EV) da integrare con logiche di pricing future.
+    """
+    return {"message": "Calcolo EV in sviluppo"}
+
 
 @app.get("/kelly")
-def calculate_kelly():
-    # Placeholder funzione calcolo frazione Kelly
-    return {"message": "Calcolo Kelly placeholder"}
-
-
+def kelly_placeholder():
+    """
+    Placeholder: calcolo frazione di Kelly da integrare con parametri di rischio.
+    """
+    return {"message": "Calcolo Kelly in sviluppo"}
