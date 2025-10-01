@@ -24,6 +24,7 @@ Data: 2025-10-01
 """
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 import os
 import httpx
 from typing import List, Dict, Any
@@ -165,10 +166,12 @@ def calc_kelly(body: KellyInput):
     k = (body.prob * body.odds - 1) / b if b > 0 else 0.0
     k = max(0.0, k) * body.safety
     return {"kelly_fraction": round(k, 4)}
+
 @app.get("/")
 def root():
-    return {
+    payload = {
         "status": "ok",
         "message": "FastAPI Betting Agent è attivo. Vedi /docs per gli endpoint.",
         "docs": "/docs"
     }
+    return JSONResponse(content=payload, media_type="application/json; charset=utf-8")
