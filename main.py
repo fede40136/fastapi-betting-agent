@@ -175,3 +175,52 @@ def root():
         "docs": "/docs"
     }
     return JSONResponse(content=payload, media_type="application/json; charset=utf-8")
+from typing import Optional
+
+@app.get("/quotes/recent", summary="Ultimi snapshot quote")
+def quotes_recent(limit: int = 50,
+                  sport: Optional[str] = None,
+                  bookmaker: Optional[str] = None,
+                  db: Session = Depends(get_db)):
+    # Limita la pagina a max 200 per evitare risposte troppo grandi
+    limit = min(limit, 200)
+    q = db.query(OddsSnapshot).order_by(OddsSnapshot.created_at.desc())
+    if sport:
+        q = q.filter(OddsSnapshot.sport_key == sport)
+    if bookmaker:
+        q = q.filter(OddsSnapshot.bookmaker == bookmaker)
+    rows = q.limit(limit).all()
+    return [
+        {
+            "id": r.id,
+            "event_id": r.event_id,
+            "sport_key": r.sport_key,
+            "bookmaker": r.bookmaker,
+            "market": r.market,
+            "home_price": r.home_price,
+            "draw_price": r.draw_price,
+            "away_price": r.away_price,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+
+@app.get("/quotes/{event_id}", summary="Storico snapshot per evento")
+def quotes_by_event(event_id: str, db: Session = Depends(get_db)):
+    rows = (
+        db.query(OddsSnapshot)
+        .filter(OddsSnapshot.event_id == event_id)
+        .order_by(OddsSnapshot.created_at.asc())
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "bookmaker": r.bookmaker,
+            "home_price": r.home_price,
+            "draw_price": r.draw_price,
+            "away_price": r.away_price,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
